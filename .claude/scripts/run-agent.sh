@@ -7,7 +7,9 @@ PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 SCHEMA_FILE="$PROJECT_ROOT/.claude/schemas/task-result.schema.json"
 
 RESULT_FILE="$(mktemp)"
-trap 'rm -f "$RESULT_FILE"' EXIT
+ERROR_FILE="$(mktemp)"
+
+trap 'rm -f "$RESULT_FILE" "$ERROR_FILE"' EXIT
 
 prompt="$(cat)"
 
@@ -18,21 +20,38 @@ fi
 
 cd "$PROJECT_ROOT"
 
+claude_args=(
+    -p "$prompt"
+    --permission-mode dontAsk
+    --output-format json
+    --json-schema "$(cat "$SCHEMA_FILE")"
+)
+
+if [[ -n "${CLAUDE_MODEL:-}" ]]; then
+    claude_args+=(--model "$CLAUDE_MODEL")
+fi
+
 set +e
 
-claude -p "$prompt" \
-    --permission-mode dontAsk \
-    --output-format json \
-    --json-schema "$(cat "$SCHEMA_FILE")" \
-    > "$RESULT_FILE"
+claude "${claude_args[@]}" \
+    > "$RESULT_FILE" \
+    2> "$ERROR_FILE"
 
 claude_exit_code=$?
 
 set -e
 
 if [[ "$claude_exit_code" -ne 0 ]]; then
+    if [[ -s "$ERROR_FILE" ]]; then
+        cat "$ERROR_FILE" >&2
+    fi
+
     printf 'ERROR: Claude Code exited with status %d\n' "$claude_exit_code" >&2
     exit 20
+fi
+
+if [[ -s "$ERROR_FILE" ]]; then
+    cat "$ERROR_FILE" >&2
 fi
 
 status="$(
