@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked"]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "modifiedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testsRun": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockingReason": {
+      "type": ["string", "null"]
+    }
+  },
+  "required": [
+    "status",
+    "branch",
+    "summary",
+    "modifiedFiles",
+    "testsRun",
+    "blockingReason"
+  ]
+}
