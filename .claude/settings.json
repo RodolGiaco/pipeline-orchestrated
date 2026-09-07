@@ -7,9 +7,7 @@
       "Read(/.mvn/**)",
 
       "Edit(/src/**)",
-      "Write(/src/**)",
       "Edit(/pom.xml)",
-      "Write(/pom.xml)",
 
       "Bash(./mvnw -B -ntp test)",
       "Bash(./mvnw -B -ntp verify)"
@@ -20,18 +18,12 @@
       "Read(/.git/**)",
 
       "Edit(/.claude/**)",
-      "Write(/.claude/**)",
       "Edit(/.github/**)",
-      "Write(/.github/**)",
       "Edit(/CLAUDE.md)",
-      "Write(/CLAUDE.md)",
 
       "Edit(/.mvn/**)",
-      "Write(/.mvn/**)",
       "Edit(/mvnw)",
-      "Write(/mvnw)",
       "Edit(/mvnw.cmd)",
-      "Write(/mvnw.cmd)",
 
       "Bash(git push *)",
       "Bash(git commit *)",
