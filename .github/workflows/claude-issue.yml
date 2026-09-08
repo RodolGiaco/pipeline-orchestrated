@@ -1,0 +1,89 @@
+name: Claude Issue
+
+run-name: "Claude issue #${{ github.event.issue.number }}"
+
+on:
+  issues:
+    types:
+      - labeled
+
+permissions:
+  contents: read
+
+jobs:
+  claude-issue:
+    if: github.event.label.name == 'claude:ready'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s 2.1.259
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/claude" --version
+
+      - name: Trust workspace for Claude Code
+        shell: bash
+        run: |
+          jq -n \
+            --arg workspace "$GITHUB_WORKSPACE" \
+            '{
+              projects: {
+                ($workspace): {
+                  hasTrustDialogAccepted: true
+                }
+              }
+            }' > "$HOME/.claude.json"
+
+      - name: Build task prompt
+        shell: bash
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          issue_title="$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")"
+          issue_body="$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")"
+
+          {
+            printf 'Validate the following GitHub issue as a task specification.\n\n'
+            printf 'Do not modify any files and do not run Bash.\n'
+            printf 'Use the Git branch provided by the session context.\n\n'
+
+            printf 'Issue #%s\n\n' "$issue_number"
+            printf 'Title:\n%s\n\n' "$issue_title"
+            printf 'Body:\n%s\n\n' "$issue_body"
+
+            printf 'Determine whether the issue provides a clear objective and acceptance criteria.\n'
+            printf 'If the task is sufficiently specified, report status completed.\n'
+            printf 'Otherwise report status blocked and explain what information is missing.\n'
+            printf 'Set modifiedFiles to an empty array.\n'
+            printf 'Set testsRun to an empty array.\n'
+          } > /tmp/task-prompt.txt
+
+      - name: Run Claude issue task
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set +e
+
+          cat /tmp/task-prompt.txt \
+            | scripts/ci/run-task.sh \
+            | tee /tmp/task-result.json
+
+          task_exit_code=${PIPESTATUS[1]}
+
+          set -e
+
+          printf 'Pipeline exit code: %d\n' "$task_exit_code"
+
+          exit "$task_exit_code"
