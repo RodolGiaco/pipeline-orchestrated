@@ -8,7 +8,8 @@ on:
       - labeled
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   claude-issue:
@@ -21,12 +22,18 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Create isolated issue branch
         shell: bash
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
+            printf 'ERROR: remote branch already exists: %s\n' "$branch_name" >&2
+            exit 40
+          fi
 
           git switch -c "$branch_name"
 
@@ -117,3 +124,62 @@ jobs:
 
           printf '%s\n' '--- Diff check ---'
           git diff --check
+
+      - name: Commit and push approved implementation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          branch_name="claude/issue-${issue_number}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- src pom.xml
+
+          if git diff --cached --quiet; then
+            printf 'ERROR: no implementation changes to publish\n' >&2
+            exit 40
+          fi
+
+          git diff --cached --check
+
+          git commit -m "chore: implement issue #${issue_number}"
+
+          gh auth setup-git
+
+          git push --set-upstream origin "$branch_name"
+
+      - name: Create pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          issue_title="$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")"
+          default_branch="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")"
+          branch_name="claude/issue-${issue_number}"
+
+          cat > /tmp/pr-body.md <<EOF
+          Automated implementation for #${issue_number}.
+
+          Closes #${issue_number}
+
+          Validation:
+          - \`./mvnw -B -ntp verify\` passed.
+
+          Claude Code produced the implementation.
+          GitHub Actions performed the commit, push, and pull request publication.
+          EOF
+
+          pr_url="$(
+            gh pr create \
+              --base "$default_branch" \
+              --head "$branch_name" \
+              --title "$issue_title" \
+              --body-file /tmp/pr-body.md
+          )"
+
+          printf 'Pull request: %s\n' "$pr_url"
+          printf 'Pull request: %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
