@@ -1,0 +1,54 @@
+name: Claude Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task prompt"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  claude-task:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s 2.1.259
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/claude" --version
+
+      - name: Run Claude task
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TASK_PROMPT: ${{ inputs.prompt }}
+        run: |
+          set +e
+
+          printf '%s\n' "$TASK_PROMPT" \
+            | scripts/ci/run-task.sh \
+            | tee /tmp/task-result.json
+
+          task_exit_code=${PIPESTATUS[1]}
+
+          set -e
+
+          printf 'Pipeline exit code: %d\n' "$task_exit_code"
+
+          exit "$task_exit_code"

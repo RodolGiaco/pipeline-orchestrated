@@ -24,6 +24,14 @@ set -e
 
 case "$agent_exit_code" in
     0)
+      unset ANTHROPIC_API_KEY
+      unset ANTHROPIC_AUTH_TOKEN
+      unset ANTHROPIC_BASE_URL
+      unset OPENROUTER_API_KEY
+      unset CLAUDE_MODEL
+      unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+      unset CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK
+      unset CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT
         ;;
     10)
         jq -c \
