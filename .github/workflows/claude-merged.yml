@@ -1,0 +1,59 @@
+name: Claude Merge Finalizer
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  finalize:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve issue from Claude branch
+        id: issue
+        shell: bash
+        run: |
+          head_branch="$(jq -r '.pull_request.head.ref' "$GITHUB_EVENT_PATH")"
+
+          case "$head_branch" in
+            claude/issue-*)
+              issue_number="${head_branch#claude/issue-}"
+              ;;
+            *)
+              printf 'Pull request is not from a Claude issue branch: %s\n' "$head_branch"
+              exit 0
+              ;;
+          esac
+
+          if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+            printf 'ERROR: invalid issue number derived from branch: %s\n' "$head_branch" >&2
+            exit 1
+          fi
+
+          printf 'issue_number=%s\n' "$issue_number" >> "$GITHUB_OUTPUT"
+
+      - name: Mark issue as completed
+        if: steps.issue.outputs.issue_number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+        run: |
+          pr_number="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+
+          gh issue edit "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:ready" \
+            --add-label "claude:completed"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Implementation completed and merged through PR #${pr_number}."
