@@ -18,6 +18,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Create isolated issue branch
+        shell: bash
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          branch_name="claude/issue-${issue_number}"
+
+          git switch -c "$branch_name"
+
+          printf 'Working branch: %s\n' "$branch_name"
 
       - name: Set up Java
         uses: actions/setup-java@v6
@@ -46,7 +59,7 @@ jobs:
               }
             }' > "$HOME/.claude.json"
 
-      - name: Build task prompt
+      - name: Build implementation prompt
         shell: bash
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
@@ -54,19 +67,24 @@ jobs:
           issue_body="$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")"
 
           {
-            printf 'Validate the following GitHub issue as a task specification.\n\n'
-            printf 'Do not modify any files and do not run Bash.\n'
-            printf 'Use the Git branch provided by the session context.\n\n'
+            printf 'Implement the following GitHub issue.\n\n'
+
+            printf 'Respect CLAUDE.md and all project permissions and hooks.\n'
+            printf 'Do not run Git commands.\n'
+            printf 'Modify only the files necessary to complete the task.\n'
+            printf 'You may run project-approved Maven Wrapper commands when useful.\n\n'
 
             printf 'Issue #%s\n\n' "$issue_number"
+
             printf 'Title:\n%s\n\n' "$issue_title"
+
             printf 'Body:\n%s\n\n' "$issue_body"
 
-            printf 'Determine whether the issue provides a clear objective and acceptance criteria.\n'
-            printf 'If the task is sufficiently specified, report status completed.\n'
-            printf 'Otherwise report status blocked and explain what information is missing.\n'
-            printf 'Set modifiedFiles to an empty array.\n'
-            printf 'Set testsRun to an empty array.\n'
+            printf 'Implement the requested change and satisfy the acceptance criteria.\n'
+            printf 'If the task is completed, report status completed.\n'
+            printf 'List every modified file in modifiedFiles.\n'
+            printf 'List only commands actually executed in testsRun.\n'
+            printf 'If the task cannot be completed under the project policies, report status blocked and explain why.\n'
           } > /tmp/task-prompt.txt
 
       - name: Run Claude issue task
@@ -87,3 +105,15 @@ jobs:
           printf 'Pipeline exit code: %d\n' "$task_exit_code"
 
           exit "$task_exit_code"
+
+      - name: Inspect implementation
+        shell: bash
+        run: |
+          printf '%s\n' '--- Git status ---'
+          git status --short
+
+          printf '%s\n' '--- Diff stat ---'
+          git diff --stat
+
+          printf '%s\n' '--- Diff check ---'
+          git diff --check
