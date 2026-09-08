@@ -51,7 +51,7 @@ jobs:
       - name: Run Claude task
         shell: bash
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TASK_PROMPT: ${{ inputs.prompt }}
         run: |
           set +e
