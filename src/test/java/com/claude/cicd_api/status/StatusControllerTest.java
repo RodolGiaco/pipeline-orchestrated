@@ -22,6 +22,7 @@ class StatusControllerTest {
         mockMvc.perform(get("/api/v1/status"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("application/json"))
-                .andExpect(jsonPath("$.status").value("UP"));
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.version").value("0.0.1-SNAPSHOT"));
     }
 }
