@@ -8,13 +8,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class StatusController {
 
     private final String version;
+    private final String environment;
 
-    public StatusController(@Value("${build.version}") String version) {
+    public StatusController(@Value("${build.version}") String version,
+                             @Value("${app.environment}") String environment) {
         this.version = version;
+        this.environment = environment;
     }
 
     @GetMapping("/api/v1/status")
     public StatusResponse getStatus() {
-        return new StatusResponse("UP", version);
+        return new StatusResponse("UP", version, environment);
     }
 }
