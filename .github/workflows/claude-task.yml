@@ -33,6 +33,21 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/claude" --version
 
+      - name: Trust workspace for Claude Code
+        shell: bash
+        run: |
+          mkdir -p "$HOME"
+
+          jq -n \
+            --arg workspace "$GITHUB_WORKSPACE" \
+            '{
+              projects: {
+                ($workspace): {
+                  hasTrustDialogAccepted: true
+                }
+              }
+            }' > "$HOME/.claude.json"
+
       - name: Run Claude task
         shell: bash
         env:
