@@ -132,15 +132,49 @@ jobs:
         id: task
         shell: bash
         env:
+          USE_OPENROUTER: ${{ vars.USE_OPENROUTER }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
 
-          cat /tmp/task-prompt.txt \
-            | scripts/ci/run-task.sh \
-            | tee /tmp/task-result.json
+          if [[ "${USE_OPENROUTER:-false}" == "true" ]]; then
+            printf 'INFO: Using OpenRouter free model\n'
 
-          task_exit_code=${PIPESTATUS[1]}
+            cat /tmp/task-prompt.txt \
+              | env \
+                  -u CLAUDE_CODE_OAUTH_TOKEN \
+                  ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
+                  ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
+                  ANTHROPIC_API_KEY="" \
+                  OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+                  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
+                  CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1 \
+                  CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1 \
+                  CLAUDE_MODEL="openrouter/free" \
+                  scripts/ci/run-task.sh \
+              | tee /tmp/task-result.json
+
+            task_exit_code=${PIPESTATUS[1]}
+          else
+            printf 'INFO: Using Claude default model\n'
+
+            cat /tmp/task-prompt.txt \
+              | env \
+                  -u ANTHROPIC_BASE_URL \
+                  -u ANTHROPIC_AUTH_TOKEN \
+                  -u ANTHROPIC_API_KEY \
+                  -u OPENROUTER_API_KEY \
+                  -u CLAUDE_MODEL \
+                  -u CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY \
+                  -u CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK \
+                  -u CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT \
+                  CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
+                  scripts/ci/run-task.sh \
+              | tee /tmp/task-result.json
+
+            task_exit_code=${PIPESTATUS[1]}
+          fi
 
           set -e
 
