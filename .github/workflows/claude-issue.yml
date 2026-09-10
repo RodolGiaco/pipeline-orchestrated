@@ -29,21 +29,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Create isolated issue branch
-        shell: bash
-        run: |
-          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
-          branch_name="claude/issue-${issue_number}"
-
-          if git show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
-            printf 'ERROR: remote branch already exists: %s\n' "$branch_name" >&2
-            exit 40
-          fi
-
-          git switch -c "$branch_name"
-
-          printf 'Working branch: %s\n' "$branch_name"
-
       - name: Mark issue as in progress
         id: state_start
         shell: bash
@@ -73,59 +58,20 @@ jobs:
 
           printf 'started=true\n' >> "$GITHUB_OUTPUT"
 
-      - name: Mark issue as blocked
-        if: ${{ steps.task.outputs.exit_code != '0' }}
+      - name: Create isolated issue branch
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          branch_name="claude/issue-${issue_number}"
 
-          case "$TASK_EXIT_CODE" in
-            10)
-              reason="Claude Code could not complete the task under the current project policies."
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
+            printf 'ERROR: remote branch already exists: %s\n' "$branch_name" >&2
+            exit 40
+          fi
 
-              if jq -e . /tmp/task-result.json >/dev/null 2>&1; then
-                reported_reason="$(
-                  jq -r '.agent.taskResult.blockingReason // empty' \
-                    /tmp/task-result.json
-                )"
+          git switch -c "$branch_name"
 
-                if [[ -n "$reported_reason" ]]; then
-                  reason="$reported_reason"
-                fi
-              fi
-              ;;
-            20)
-              reason="Claude Code or the agent wrapper failed before producing a valid completed result."
-              ;;
-            30)
-              reason="The external quality gate failed after Claude Code completed its work."
-              ;;
-            *)
-              reason="The pipeline failed with unexpected exit code ${TASK_EXIT_CODE}."
-              ;;
-          esac
-
-          gh issue edit "$issue_number" \
-            --repo "$GITHUB_REPOSITORY" \
-            --remove-label "claude:in-progress" \
-            --add-label "claude:blocked"
-
-          gh issue comment "$issue_number" \
-            --repo "$GITHUB_REPOSITORY" \
-            --body "Automation moved this issue to \`claude:blocked\`.
-
-          Reason: ${reason}"
-
-      - name: Stop blocked workflow
-        if: ${{ steps.task.outputs.exit_code != '0' }}
-        shell: bash
-        env:
-          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
-        run: |
-          exit "$TASK_EXIT_CODE"
+          printf 'Working branch: %s\n' "$branch_name"
 
       - name: Set up Java
         uses: actions/setup-java@v6
@@ -201,7 +147,98 @@ jobs:
           printf 'Pipeline exit code: %d\n' "$task_exit_code"
           printf 'exit_code=%d\n' "$task_exit_code" >> "$GITHUB_OUTPUT"
 
+      - name: Mark issue as blocked
+        if: ${{ steps.task.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          case "$TASK_EXIT_CODE" in
+            10)
+              reason="Claude Code could not complete the task under the current project policies."
+
+              if jq -e . /tmp/task-result.json >/dev/null 2>&1; then
+                reported_reason="$(
+                  jq -r '.agent.taskResult.blockingReason // empty' \
+                    /tmp/task-result.json
+                )"
+
+                if [[ -n "$reported_reason" ]]; then
+                  reason="$reported_reason"
+                fi
+              fi
+              ;;
+            20)
+              reason="Claude Code or the agent wrapper failed before producing a valid completed result."
+              ;;
+            30)
+              reason="The external quality gate failed after Claude Code completed its work."
+              ;;
+            *)
+              reason="The pipeline failed with unexpected exit code ${TASK_EXIT_CODE}."
+              ;;
+          esac
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Automation moved this issue to \`claude:blocked\`.
+
+          Reason: ${reason}"
+
+      - name: Stop blocked workflow
+        if: ${{ steps.task.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
+        run: |
+          exit "$TASK_EXIT_CODE"
+
+      - name: Validate implementation changes
+        id: changes
+        if: ${{ steps.task.outputs.exit_code == '0' }}
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain -- src pom.xml)" ]]; then
+            printf 'has_changes=false\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'has_changes=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark empty implementation as blocked
+        if: ${{ steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Automation moved this issue to \`claude:blocked\`.
+
+          Reason: Claude Code reported the task as completed but produced no publishable implementation changes."
+
+      - name: Stop empty implementation
+        if: ${{ steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
+        shell: bash
+        run: |
+          exit 10
+
       - name: Inspect implementation
+        if: ${{ steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'true' }}
         shell: bash
         run: |
           printf '%s\n' '--- Git status ---'
@@ -269,10 +306,12 @@ jobs:
               --title "$issue_title" \
               --body-file /tmp/pr-body.md
           )"
+
           pr_number="${pr_url##*/}"
-          
+
           printf 'url=%s\n' "$pr_url" >> "$GITHUB_OUTPUT"
           printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
+
           printf 'Pull request: %s\n' "$pr_url"
           printf 'Pull request: %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
 
@@ -312,7 +351,7 @@ jobs:
             --body "Automation failed before the Claude task could be executed."
 
       - name: Mark publication failure as blocked
-        if: ${{ failure() && steps.task.outputs.exit_code == '0' && steps.state_pr.outcome != 'success' }}
+        if: ${{ failure() && steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'true' && steps.state_pr.outcome != 'success' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
