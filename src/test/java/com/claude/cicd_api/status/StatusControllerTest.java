@@ -24,6 +24,7 @@ class StatusControllerTest {
                 .andExpect(content().contentTypeCompatibleWith("application/json"))
                 .andExpect(jsonPath("$.status").value("UP"))
                 .andExpect(jsonPath("$.version").value("0.0.1-SNAPSHOT"))
-                .andExpect(jsonPath("$.environment").value("local"));
+                .andExpect(jsonPath("$.environment").value("local"))
+                .andExpect(jsonPath("$.description").value("Service is running"));
     }
 }
