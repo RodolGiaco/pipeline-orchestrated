@@ -18,6 +18,6 @@ public class StatusController {
 
     @GetMapping("/api/v1/status")
     public StatusResponse getStatus() {
-        return new StatusResponse("UP", version, environment);
+        return new StatusResponse("UP", version, environment, "Service is running");
     }
 }
