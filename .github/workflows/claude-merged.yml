@@ -50,9 +50,9 @@ jobs:
           pr_number="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
 
           gh issue edit "$ISSUE_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" \
-            --remove-label "claude:ready" \
-            --add-label "claude:completed"
+          --repo "$GITHUB_REPOSITORY" \
+          --remove-label "claude:pr-open" \
+          --add-label "claude:completed"
 
           gh issue comment "$ISSUE_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \

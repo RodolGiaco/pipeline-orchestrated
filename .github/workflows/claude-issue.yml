@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
   claude-issue:
@@ -38,6 +43,89 @@ jobs:
           git switch -c "$branch_name"
 
           printf 'Working branch: %s\n' "$branch_name"
+
+      - name: Mark issue as in progress
+        id: state_start
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          current_labels="$(
+            gh issue view "$issue_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json labels \
+              --jq '.labels[].name'
+          )"
+
+          args=(
+            --repo "$GITHUB_REPOSITORY"
+            --remove-label "claude:ready"
+            --add-label "claude:in-progress"
+          )
+
+          if grep -Fxq "claude:blocked" <<< "$current_labels"; then
+            args+=(--remove-label "claude:blocked")
+          fi
+
+          gh issue edit "$issue_number" "${args[@]}"
+
+          printf 'started=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Mark issue as blocked
+        if: ${{ steps.task.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          case "$TASK_EXIT_CODE" in
+            10)
+              reason="Claude Code could not complete the task under the current project policies."
+
+              if jq -e . /tmp/task-result.json >/dev/null 2>&1; then
+                reported_reason="$(
+                  jq -r '.agent.taskResult.blockingReason // empty' \
+                    /tmp/task-result.json
+                )"
+
+                if [[ -n "$reported_reason" ]]; then
+                  reason="$reported_reason"
+                fi
+              fi
+              ;;
+            20)
+              reason="Claude Code or the agent wrapper failed before producing a valid completed result."
+              ;;
+            30)
+              reason="The external quality gate failed after Claude Code completed its work."
+              ;;
+            *)
+              reason="The pipeline failed with unexpected exit code ${TASK_EXIT_CODE}."
+              ;;
+          esac
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Automation moved this issue to \`claude:blocked\`.
+
+          Reason: ${reason}"
+
+      - name: Stop blocked workflow
+        if: ${{ steps.task.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
+        run: |
+          exit "$TASK_EXIT_CODE"
 
       - name: Set up Java
         uses: actions/setup-java@v6
@@ -95,6 +183,7 @@ jobs:
           } > /tmp/task-prompt.txt
 
       - name: Run Claude issue task
+        id: task
         shell: bash
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -110,8 +199,7 @@ jobs:
           set -e
 
           printf 'Pipeline exit code: %d\n' "$task_exit_code"
-
-          exit "$task_exit_code"
+          printf 'exit_code=%d\n' "$task_exit_code" >> "$GITHUB_OUTPUT"
 
       - name: Inspect implementation
         shell: bash
@@ -152,6 +240,7 @@ jobs:
           git push --set-upstream origin "$branch_name"
 
       - name: Create pull request
+        id: pr
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -180,6 +269,61 @@ jobs:
               --title "$issue_title" \
               --body-file /tmp/pr-body.md
           )"
-
+          pr_number="${pr_url##*/}"
+          
+          printf 'url=%s\n' "$pr_url" >> "$GITHUB_OUTPUT"
+          printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
           printf 'Pull request: %s\n' "$pr_url"
           printf 'Pull request: %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark issue as pull request open
+        id: state_pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:pr-open"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Implementation published in PR #${PR_NUMBER}."
+
+      - name: Mark setup failure as blocked
+        if: ${{ failure() && steps.state_start.outputs.started == 'true' && steps.task.outputs.exit_code == '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Automation failed before the Claude task could be executed."
+
+      - name: Mark publication failure as blocked
+        if: ${{ failure() && steps.task.outputs.exit_code == '0' && steps.state_pr.outcome != 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "The implementation passed validation, but the publication stage failed."
