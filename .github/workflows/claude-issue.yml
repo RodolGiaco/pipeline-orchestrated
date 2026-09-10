@@ -132,54 +132,66 @@ jobs:
         id: task
         shell: bash
         env:
-          USE_OPENROUTER: ${{ vars.USE_OPENROUTER }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
 
-          if [[ "${USE_OPENROUTER:-false}" == "true" ]]; then
-            printf 'INFO: Using OpenRouter free model\n'
+          cat /tmp/task-prompt.txt \
+            | scripts/ci/run-task.sh \
+            | tee /tmp/task-result.json
 
-            cat /tmp/task-prompt.txt \
-              | env \
-                  -u CLAUDE_CODE_OAUTH_TOKEN \
-                  ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
-                  ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
-                  ANTHROPIC_API_KEY="" \
-                  OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-                  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
-                  CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1 \
-                  CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1 \
-                  CLAUDE_MODEL="openrouter/free" \
-                  scripts/ci/run-task.sh \
-              | tee /tmp/task-result.json
-
-            task_exit_code=${PIPESTATUS[1]}
-          else
-            printf 'INFO: Using Claude default model\n'
-
-            cat /tmp/task-prompt.txt \
-              | env \
-                  -u ANTHROPIC_BASE_URL \
-                  -u ANTHROPIC_AUTH_TOKEN \
-                  -u ANTHROPIC_API_KEY \
-                  -u OPENROUTER_API_KEY \
-                  -u CLAUDE_MODEL \
-                  -u CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY \
-                  -u CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK \
-                  -u CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT \
-                  CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
-                  scripts/ci/run-task.sh \
-              | tee /tmp/task-result.json
-
-            task_exit_code=${PIPESTATUS[1]}
-          fi
+          task_exit_code=${PIPESTATUS[1]}
 
           set -e
 
           printf 'Pipeline exit code: %d\n' "$task_exit_code"
           printf 'exit_code=%d\n' "$task_exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Mark issue as blocked
+        if: ${{ steps.task.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_EXIT_CODE: ${{ steps.task.outputs.exit_code }}
+        run: |
+          issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+
+          case "$TASK_EXIT_CODE" in
+            10)
+              reason="Claude Code could not complete the task under the current project policies."
+
+              if jq -e . /tmp/task-result.json >/dev/null 2>&1; then
+                reported_reason="$(
+                  jq -r '.agent.taskResult.blockingReason // empty' \
+                    /tmp/task-result.json
+                )"
+
+                if [[ -n "$reported_reason" ]]; then
+                  reason="$reported_reason"
+                fi
+              fi
+              ;;
+            20)
+              reason="Claude Code or the agent wrapper failed before producing a valid completed result."
+              ;;
+            30)
+              reason="The external quality gate failed after Claude Code completed its work."
+              ;;
+            *)
+              reason="The pipeline failed with unexpected exit code ${TASK_EXIT_CODE}."
+              ;;
+          esac
+
+          gh issue edit "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --remove-label "claude:in-progress" \
+            --add-label "claude:blocked"
+
+          gh issue comment "$issue_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Automation moved this issue to \`claude:blocked\`.
+
+          Reason: ${reason}"
 
       - name: Stop blocked workflow
         if: ${{ steps.task.outputs.exit_code != '0' }}
