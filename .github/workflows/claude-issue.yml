@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   claude-issue:
-    if: github.event.label.name == 'claude:ready'
+    if: ${{ github.event.label.name == 'claude:ready' || github.event.label.name == 'claude:retry' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +36,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+          trigger_label="$(jq -r '.label.name' "$GITHUB_EVENT_PATH")"
 
           current_labels="$(
             gh issue view "$issue_number" \
@@ -44,9 +45,15 @@ jobs:
               --jq '.labels[].name'
           )"
 
+          if [[ "$trigger_label" == "claude:retry" ]] \
+              && ! grep -Fxq "claude:blocked" <<< "$current_labels"; then
+            printf 'ERROR: claude:retry is only valid from claude:blocked\n' >&2
+            exit 41
+          fi
+
           args=(
             --repo "$GITHUB_REPOSITORY"
-            --remove-label "claude:ready"
+            --remove-label "$trigger_label"
             --add-label "claude:in-progress"
           )
 
@@ -298,19 +305,23 @@ jobs:
           git add -A -- src pom.xml
 
           if git diff --cached --quiet; then
-            printf 'ERROR: no implementation changes to publish\n' >&2
-            exit 40
+            if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+              printf 'No new implementation changes. Reusing existing remote branch: %s\n' "$branch_name"
+            else
+              printf 'ERROR: no implementation changes to publish\n' >&2
+              exit 40
+            fi
+          else
+            git diff --cached --check
+
+            git commit -m "chore: implement issue #${issue_number}"
+
+            gh auth setup-git
+
+            git push --set-upstream origin "$branch_name"
           fi
 
-          git diff --cached --check
-
-          git commit -m "chore: implement issue #${issue_number}"
-
-          gh auth setup-git
-
-          git push --set-upstream origin "$branch_name"
-
-      - name: Create pull request
+      - name: Create or recover pull request
         id: pr
         shell: bash
         env:
@@ -321,7 +332,22 @@ jobs:
           default_branch="$(jq -r '.repository.default_branch' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
 
-          cat > /tmp/pr-body.md <<EOF
+          existing_pr="$(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --head "$branch_name" \
+              --state open \
+              --json number,url \
+              --jq '.[0] // empty'
+          )"
+
+          if [[ -n "$existing_pr" ]]; then
+            pr_number="$(jq -r '.number' <<< "$existing_pr")"
+            pr_url="$(jq -r '.url' <<< "$existing_pr")"
+
+            printf 'Reusing existing pull request: %s\n' "$pr_url"
+          else
+            cat > /tmp/pr-body.md <<EOF
           Automated implementation for #${issue_number}.
 
           Closes #${issue_number}
@@ -332,16 +358,16 @@ jobs:
           Claude Code produced the implementation.
           GitHub Actions performed the commit, push, and pull request publication.
           EOF
+            pr_url="$(
+              gh pr create \
+                --base "$default_branch" \
+                --head "$branch_name" \
+                --title "$issue_title" \
+                --body-file /tmp/pr-body.md
+            )"
 
-          pr_url="$(
-            gh pr create \
-              --base "$default_branch" \
-              --head "$branch_name" \
-              --title "$issue_title" \
-              --body-file /tmp/pr-body.md
-          )"
-
-          pr_number="${pr_url##*/}"
+            pr_number="${pr_url##*/}"
+          fi
 
           printf 'url=%s\n' "$pr_url" >> "$GITHUB_OUTPUT"
           printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
