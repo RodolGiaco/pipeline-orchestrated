@@ -1,4 +1,4 @@
-package com.claude.cicd_api;
+package com.claude.cicd.api;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

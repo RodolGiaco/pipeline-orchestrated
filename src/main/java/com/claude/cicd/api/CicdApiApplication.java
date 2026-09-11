@@ -1,4 +1,4 @@
-package com.claude.cicd_api;
+package com.claude.cicd.api;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

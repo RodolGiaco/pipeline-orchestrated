@@ -1,4 +1,4 @@
-package com.claude.cicd_api.status;
+package com.claude.cicd.api.status;
 
 import org.junit.jupiter.api.Test;
 
