@@ -65,19 +65,23 @@ jobs:
 
           printf 'started=true\n' >> "$GITHUB_OUTPUT"
 
-      - name: Create isolated issue branch
+      - name: Create or recover isolated issue branch
         shell: bash
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
-
-          if git show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
-            printf 'ERROR: remote branch already exists: %s\n' "$branch_name" >&2
-            exit 40
+          
+          if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+            printf 'Recovering existing remote branch: %s\n' "$branch_name"
+          
+            git fetch origin "$branch_name"
+            git switch -C "$branch_name" FETCH_HEAD
+          else
+            printf 'Creating new issue branch: %s\n' "$branch_name"
+          
+            git switch -c "$branch_name"
           fi
-
-          git switch -c "$branch_name"
-
+          
           printf 'Working branch: %s\n' "$branch_name"
 
       - name: Set up Java
