@@ -1,4 +1,4 @@
 package com.claude.cicd_api.status;
 
-public record StatusResponse(String status, String version, String environment, String description) {
+public record StatusResponse(String status, String version, String environment, String description, String component) {
 }
