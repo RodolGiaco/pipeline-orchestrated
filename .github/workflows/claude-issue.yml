@@ -325,7 +325,7 @@ jobs:
 
       - name: Validate implementation changes
         id: changes
-        if: ${{ steps.task.outputs.exit_code == '0' }}
+        if: ${{ steps.state_start.outputs.published_recovery != 'true' && steps.task.outputs.exit_code != '' && steps.task.outputs.exit_code == '0' }}
         shell: bash
         run: |
           if [[ -z "$(git status --porcelain -- src pom.xml)" ]]; then
@@ -335,7 +335,7 @@ jobs:
           fi
 
       - name: Mark empty implementation as blocked
-        if: ${{ steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
+        if: ${{ steps.state_start.outputs.published_recovery != 'true' && steps.task.outputs.exit_code != '' && steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -354,7 +354,7 @@ jobs:
           Reason: Claude Code reported the task as completed but produced no publishable implementation changes."
 
       - name: Stop empty implementation
-        if: ${{ steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
+        if: ${{ steps.state_start.outputs.published_recovery != 'true' && steps.task.outputs.exit_code != '' && steps.task.outputs.exit_code == '0' && steps.changes.outputs.has_changes == 'false' }}
         shell: bash
         run: |
           exit 10
