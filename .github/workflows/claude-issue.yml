@@ -70,18 +70,24 @@ jobs:
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
-          
+
           if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
             printf 'Recovering existing remote branch: %s\n' "$branch_name"
-          
-            git fetch origin "$branch_name"
-            git switch -C "$branch_name" FETCH_HEAD
+
+            git fetch origin \
+              "$branch_name:refs/remotes/origin/$branch_name"
+
+            git switch -C "$branch_name" "origin/$branch_name"
+
+            git branch \
+              --set-upstream-to="origin/$branch_name" \
+              "$branch_name"
           else
             printf 'Creating new issue branch: %s\n' "$branch_name"
-          
+
             git switch -c "$branch_name"
           fi
-          
+
           printf 'Working branch: %s\n' "$branch_name"
 
       - name: Set up Java
@@ -321,6 +327,17 @@ jobs:
             git commit -m "chore: implement issue #${issue_number}"
 
             gh auth setup-git
+
+            if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+              git fetch origin \
+                "$branch_name:refs/remotes/origin/$branch_name"
+
+              if ! git merge-base --is-ancestor "origin/$branch_name" HEAD; then
+                printf 'Remote branch advanced. Rebasing local implementation.\n'
+
+                git rebase "origin/$branch_name"
+              fi
+            fi
 
             git push --set-upstream origin "$branch_name"
           fi
