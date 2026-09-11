@@ -1,0 +1,94 @@
+name: Release
+
+run-name: "Release ${{ github.sha }}"
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    name: Build Release Artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run release quality gate
+        shell: bash
+        run: ./mvnw -B -ntp verify
+
+      - name: Prepare release artifact
+        id: release
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          mapfile -t jars < <(
+            find target \
+              -maxdepth 1 \
+              -type f \
+              -name '*.jar' \
+              -print \
+              | sort
+          )
+
+          if [[ "${#jars[@]}" -ne 1 ]]; then
+            printf 'ERROR: expected exactly one release JAR, found %d\n' \
+              "${#jars[@]}" >&2
+
+            printf '%s\n' "${jars[@]}" >&2
+            exit 1
+          fi
+
+          release_name="claude-cicd-api-${GITHUB_SHA}.jar"
+          release_path="dist/${release_name}"
+
+          cp "${jars[0]}" "$release_path"
+
+          sha256sum "$release_path" > "${release_path}.sha256"
+
+          checksum="$(cut -d ' ' -f1 "${release_path}.sha256")"
+
+          printf 'name=%s\n' "$release_name" >> "$GITHUB_OUTPUT"
+          printf 'path=%s\n' "$release_path" >> "$GITHUB_OUTPUT"
+          printf 'checksum=%s\n' "$checksum" >> "$GITHUB_OUTPUT"
+
+          printf 'Release artifact: %s\n' "$release_name"
+          printf 'SHA-256: %s\n' "$checksum"
+
+      - name: Upload release artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-cicd-api-${{ github.sha }}
+          path: |
+            ${{ steps.release.outputs.path }}
+            ${{ steps.release.outputs.path }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Write release summary
+        shell: bash
+        run: |
+          {
+            printf '## Release artifact\n\n'
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- JAR: `%s`\n' "${{ steps.release.outputs.name }}"
+            printf -- '- SHA-256: `%s`\n' "${{ steps.release.outputs.checksum }}"
+            printf -- '- Artifact digest: `%s`\n' "${{ steps.upload.outputs.artifact-digest }}"
+            printf -- '- Artifact: %s\n' "${{ steps.upload.outputs.artifact-url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
