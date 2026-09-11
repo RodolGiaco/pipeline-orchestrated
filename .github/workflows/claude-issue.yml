@@ -78,13 +78,51 @@ jobs:
       - name: Create or recover isolated issue branch
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           PUBLISHED_RECOVERY: ${{ steps.state_start.outputs.published_recovery }}
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
+          encoded_branch="$(jq -rn --arg value "$branch_name" '$value | @uri')"
+
+          set +e
+
+          http_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/branches/$encoded_branch"
+          )"
+
+          curl_exit_code=$?
+
+          set -e
+
+          if [[ "$curl_exit_code" -ne 0 ]]; then
+            printf 'ERROR: could not query remote branch state\n' >&2
+            exit 43
+          fi
+
+          case "$http_status" in
+            200)
+              remote_branch_exists=true
+              ;;
+            404)
+              remote_branch_exists=false
+              ;;
+            *)
+              printf 'ERROR: GitHub API returned HTTP %s while checking branch %s\n' \
+                "$http_status" "$branch_name" >&2
+              exit 43
+              ;;
+          esac
 
           if [[ "$PUBLISHED_RECOVERY" == "true" ]]; then
-            if ! git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+            if [[ "$remote_branch_exists" != "true" ]]; then
               printf 'ERROR: claude:published exists but remote branch is missing: %s\n' \
                 "$branch_name" >&2
               exit 42
@@ -92,13 +130,14 @@ jobs:
 
             printf 'Recovering published branch: %s\n' "$branch_name"
 
+            gh auth setup-git
+
             git fetch origin \
               "$branch_name:refs/remotes/origin/$branch_name"
 
             git switch -C "$branch_name" "origin/$branch_name"
-
           else
-            if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
+            if [[ "$remote_branch_exists" == "true" ]]; then
               printf 'ERROR: remote branch exists without claude:published: %s\n' \
                 "$branch_name" >&2
               exit 42
@@ -119,6 +158,7 @@ jobs:
           cache: maven
 
       - name: Install Claude Code
+        if: steps.state_start.outputs.published_recovery != 'true'
         shell: bash
         run: |
           curl -fsSL https://claude.ai/install.sh | bash -s 2.1.259
@@ -126,6 +166,7 @@ jobs:
           "$HOME/.local/bin/claude" --version
 
       - name: Trust workspace for Claude Code
+        if: steps.state_start.outputs.published_recovery != 'true'
         shell: bash
         run: |
           jq -n \
@@ -354,13 +395,46 @@ jobs:
 
           git commit -m "chore: implement issue #${issue_number}"
 
-          gh auth setup-git
+          encoded_branch="$(jq -rn --arg value "$branch_name" '$value | @uri')"
 
-          if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
-            printf 'ERROR: remote branch appeared unexpectedly: %s\n' \
-              "$branch_name" >&2
-            exit 42
+          set +e
+
+          http_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/branches/$encoded_branch"
+          )"
+
+          curl_exit_code=$?
+
+          set -e
+
+          if [[ "$curl_exit_code" -ne 0 ]]; then
+            printf 'ERROR: could not query remote branch state before push\n' >&2
+            exit 43
           fi
+
+          case "$http_status" in
+            404)
+              ;;
+            200)
+              printf 'ERROR: remote branch appeared unexpectedly: %s\n' \
+                "$branch_name" >&2
+              exit 42
+              ;;
+            *)
+              printf 'ERROR: GitHub API returned HTTP %s while checking branch %s\n' \
+                "$http_status" "$branch_name" >&2
+              exit 43
+              ;;
+          esac
+
+          gh auth setup-git
 
           git push --set-upstream origin "$branch_name"
 
