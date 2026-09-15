@@ -8,8 +8,8 @@ on:
       - labeled
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
   issues: write
 
 concurrency:
@@ -372,17 +372,42 @@ jobs:
           printf '%s\n' '--- Diff check ---'
           git diff --check
 
+      - name: Create GitHub App token
+        id: app-token
+        if: ${{ !cancelled() && !failure() }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.CLAUDE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Configure GitHub App Git identity
+        if: steps.state_start.outputs.published_recovery != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          app_user_id="$(
+            gh api "/users/${APP_SLUG}[bot]"               --jq '.id'
+          )"
+
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email             "${app_user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          gh auth setup-git
+
+          printf 'GitHub App identity configured: %s[bot]\n' "$APP_SLUG"
+
       - name: Commit and push approved implementation
         if: steps.state_start.outputs.published_recovery != 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           branch_name="claude/issue-${issue_number}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add -A -- src pom.xml
 
@@ -434,8 +459,6 @@ jobs:
               ;;
           esac
 
-          gh auth setup-git
-
           git push --set-upstream origin "$branch_name"
 
       - name: Mark implementation as published
@@ -457,7 +480,7 @@ jobs:
         id: pr
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           issue_number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
           issue_title="$(jq -r '.issue.title' "$GITHUB_EVENT_PATH")"
