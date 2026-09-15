@@ -1,0 +1,209 @@
+name: Production
+
+run-name: "Production from staging run ${{ github.event.workflow_run.id }}"
+
+on:
+  workflow_run:
+    workflows:
+      - Staging
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  promote-production:
+    name: Promote Production
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+      - name: Download staging promotion manifest
+        uses: actions/download-artifact@v5
+        with:
+          name: staging-promotion
+          path: ${{ runner.temp }}/promotion
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate staging promotion manifest
+        id: promotion
+        shell: bash
+        run: |
+          manifest="$RUNNER_TEMP/promotion/manifest.json"
+
+          if [[ ! -f "$manifest" ]]; then
+            printf 'ERROR: staging promotion manifest is missing\n' >&2
+            exit 1
+          fi
+
+          jq -e '
+            .schemaVersion == 1
+            and (.releaseSha | type == "string")
+            and (.imageTag | type == "string")
+            and (.imageRef | type == "string")
+            and (.jarSha256 | type == "string")
+          ' "$manifest" >/dev/null
+
+          release_sha="$(jq -r '.releaseSha' "$manifest")"
+          image_tag="$(jq -r '.imageTag' "$manifest")"
+          image_ref="$(jq -r '.imageRef' "$manifest")"
+          jar_checksum="$(jq -r '.jarSha256' "$manifest")"
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+
+          expected_tag="ghcr.io/${owner}/claude-cicd-api:sha-${release_sha}"
+          expected_digest_prefix="ghcr.io/${owner}/claude-cicd-api@sha256:"
+
+          if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'ERROR: invalid release SHA: %s\n' "$release_sha" >&2
+            exit 1
+          fi
+
+          if [[ "$image_tag" != "$expected_tag" ]]; then
+            printf 'ERROR: image tag does not match release SHA\n' >&2
+            exit 1
+          fi
+
+          if [[ "$image_ref" != "$expected_digest_prefix"* ]]; then
+            printf 'ERROR: image reference is not an expected immutable GHCR digest\n' >&2
+            exit 1
+          fi
+
+          if [[ ! "$jar_checksum" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'ERROR: invalid JAR SHA-256\n' >&2
+            exit 1
+          fi
+
+          printf 'release_sha=%s\n' "$release_sha" >> "$GITHUB_OUTPUT"
+          printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+          printf 'jar_checksum=%s\n' "$jar_checksum" >> "$GITHUB_OUTPUT"
+
+          printf 'Approved staging image: %s\n' "$image_ref"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull immutable production image
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
+        run: |
+          docker pull "$IMAGE_REF"
+
+      - name: Verify production image identity
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
+          RELEASE_SHA: ${{ steps.promotion.outputs.release_sha }}
+          EXPECTED_JAR_CHECKSUM: ${{ steps.promotion.outputs.jar_checksum }}
+        run: |
+          revision="$(
+            docker image inspect "$IMAGE_REF" \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+          )"
+
+          jar_checksum="$(
+            docker image inspect "$IMAGE_REF" \
+              --format '{{index .Config.Labels "io.github.pipeline-orchestrated.jar.sha256"}}'
+          )"
+
+          if [[ "$revision" != "$RELEASE_SHA" ]]; then
+            printf 'ERROR: production image revision does not match promoted release\n' >&2
+            exit 1
+          fi
+
+          if [[ "$jar_checksum" != "$EXPECTED_JAR_CHECKSUM" ]]; then
+            printf 'ERROR: production JAR checksum does not match staging promotion\n' >&2
+            exit 1
+          fi
+
+          printf 'Production image identity verified.\n'
+
+      - name: Deploy production candidate
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
+        run: |
+          docker run \
+            --detach \
+            --name production-app \
+            --publish 127.0.0.1:8080:8080 \
+            "$IMAGE_REF"
+
+      - name: Run production smoke test
+        shell: bash
+        run: |
+          endpoint="http://127.0.0.1:8080/api/v1/status"
+          response=""
+
+          for attempt in $(seq 1 30); do
+            if response="$(curl --fail --silent --show-error "$endpoint")"; then
+              break
+            fi
+
+            printf 'Waiting for production application... attempt %d/30\n' "$attempt"
+            sleep 2
+          done
+
+          if [[ -z "$response" ]]; then
+            printf 'ERROR: production application did not become ready\n' >&2
+            docker logs production-app >&2
+            exit 1
+          fi
+
+          printf 'Response: %s\n' "$response"
+
+          if ! jq -e '.status == "UP"' <<< "$response" >/dev/null; then
+            printf 'ERROR: production smoke test returned unexpected status\n' >&2
+            exit 1
+          fi
+
+          printf 'Production smoke test passed: status=UP\n'
+
+      - name: Write production summary
+        shell: bash
+        run: |
+          {
+            printf '## Production promotion\n\n'
+
+            printf -- '- Release commit: `%s`\n' \
+              "${{ steps.promotion.outputs.release_sha }}"
+
+            printf -- '- Immutable image: `%s`\n' \
+              "${{ steps.promotion.outputs.image_ref }}"
+
+            printf -- '- JAR SHA-256: `%s`\n' \
+              "${{ steps.promotion.outputs.jar_checksum }}"
+
+            printf -- '- Source: `staging-promotion`\n'
+            printf -- '- Approval: `production` environment\n'
+            printf -- '- Smoke test: `GET /api/v1/status` ✓\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show production logs on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          docker logs production-app || true
+
+      - name: Remove production container
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          docker rm --force production-app >/dev/null 2>&1 || true

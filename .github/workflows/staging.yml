@@ -135,6 +135,38 @@ jobs:
 
           printf 'Smoke test passed: status=UP\n'
 
+      - name: Create staging promotion manifest
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/promotion"
+
+          jq -n \
+            --arg release_sha "${{ steps.image.outputs.release_sha }}" \
+            --arg release_run_id "${{ github.event.workflow_run.id }}" \
+            --arg staging_run_id "$GITHUB_RUN_ID" \
+            --arg image_tag "${{ steps.image.outputs.image_tag }}" \
+            --arg image_ref "${{ steps.image.outputs.image_ref }}" \
+            --arg jar_checksum "${{ steps.image.outputs.jar_checksum }}" \
+            '{
+              schemaVersion: 1,
+              releaseSha: $release_sha,
+              releaseRunId: $release_run_id,
+              stagingRunId: $staging_run_id,
+              imageTag: $image_tag,
+              imageRef: $image_ref,
+              jarSha256: $jar_checksum
+            }' > "$RUNNER_TEMP/promotion/manifest.json"
+
+          cat "$RUNNER_TEMP/promotion/manifest.json"
+
+      - name: Upload staging promotion manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: staging-promotion
+          path: ${{ runner.temp }}/promotion/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Write staging summary
         shell: bash
         run: |
