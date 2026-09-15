@@ -27,6 +27,7 @@ class StatusControllerTest {
                 .andExpect(jsonPath("$.environment").value("local"))
                 .andExpect(jsonPath("$.description").value("Service is running"))
                 .andExpect(jsonPath("$.component").value("status"))
-                .andExpect(jsonPath("$.platform").value("pipeline-orchestrated"));
+                .andExpect(jsonPath("$.platform").value("pipeline-orchestrated"))
+                .andExpect(jsonPath("$.pipeline").value("github-actions"));
     }
 }
