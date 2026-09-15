@@ -1,0 +1,203 @@
+name: Cloud Run Deploy Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: Immutable GHCR image reference
+        required: true
+        type: string
+        default: ghcr.io/rodolgiaco/claude-cicd-api@sha256:349e1e321169330eea7cb72ce086f2de99b04f643cba44a0dc814111d680b658
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-run-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Cloud Run Production
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Validate immutable image reference
+        id: image
+        shell: bash
+        env:
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: |
+          expected_prefix="ghcr.io/rodolgiaco/claude-cicd-api@sha256:"
+
+          if [[ ! "$IMAGE_REF" =~ ^ghcr\.io/rodolgiaco/claude-cicd-api@sha256:[0-9a-f]{64}$ ]]; then
+            printf 'ERROR: invalid immutable image reference\n' >&2
+            printf 'Received: %s\n' "$IMAGE_REF" >&2
+            exit 1
+          fi
+
+          digest="${IMAGE_REF##*@}"
+
+          printf 'image_ref=%s\n' "$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+          printf 'Validated image: %s\n' "$IMAGE_REF"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Deploy immutable image to Cloud Run
+        id: deploy
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --image="$IMAGE_REF" \
+            --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+            --port=8080 \
+            --cpu=1 \
+            --memory=512Mi \
+            --min=0 \
+            --max=2 \
+            --concurrency=20 \
+            --timeout=30s \
+            --ingress=all \
+            --allow-unauthenticated \
+            --quiet
+
+          service_url="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.url)'
+          )"
+
+          if [[ -z "$service_url" ]]; then
+            printf 'ERROR: Cloud Run service URL was not resolved\n' >&2
+            exit 1
+          fi
+
+          printf 'url=%s\n' "$service_url" >> "$GITHUB_OUTPUT"
+
+          printf 'Cloud Run URL: %s\n' "$service_url"
+
+      - name: Verify deployed revision identity
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          revision="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.latestReadyRevisionName)'
+          )"
+
+          if [[ -z "$revision" ]]; then
+            printf 'ERROR: latest ready revision could not be resolved\n' >&2
+            exit 1
+          fi
+
+          deployed_digest="$(
+            gcloud run revisions describe "$revision" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.imageDigest)'
+          )"
+
+          printf 'Revision: %s\n' "$revision"
+          printf 'Expected digest: %s\n' "$EXPECTED_DIGEST"
+          printf 'Deployed digest: %s\n' "$deployed_digest"
+
+          if [[ "$deployed_digest" != *"$EXPECTED_DIGEST" ]]; then
+            printf 'ERROR: Cloud Run is not executing the expected image digest\n' >&2
+            exit 1
+          fi
+
+          printf 'Cloud Run image identity verified.\n'
+
+      - name: Run production smoke test
+        shell: bash
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          endpoint="${SERVICE_URL}/api/v1/status"
+          response=""
+
+          for attempt in $(seq 1 30); do
+            if response="$(
+              curl \
+                --fail \
+                --silent \
+                --show-error \
+                "$endpoint"
+            )"; then
+              break
+            fi
+
+            printf 'Waiting for Cloud Run... attempt %d/30\n' "$attempt"
+            sleep 2
+          done
+
+          if [[ -z "$response" ]]; then
+            printf 'ERROR: Cloud Run service did not become available\n' >&2
+            exit 1
+          fi
+
+          printf 'Response: %s\n' "$response"
+
+          if ! jq -e '.status == "UP"' <<< "$response" >/dev/null; then
+            printf 'ERROR: unexpected production status\n' >&2
+            exit 1
+          fi
+
+          printf 'Production smoke test passed: status=UP\n'
+
+      - name: Write deployment summary
+        shell: bash
+        run: |
+          {
+            printf '## Real Cloud Run deployment\n\n'
+
+            printf -- '- Project: `%s`\n' \
+              "${{ vars.GCP_PROJECT_ID }}"
+
+            printf -- '- Region: `%s`\n' \
+              "${{ vars.GCP_REGION }}"
+
+            printf -- '- Service: `%s`\n' \
+              "${{ vars.GCP_CLOUD_RUN_SERVICE }}"
+
+            printf -- '- Immutable image: `%s`\n' \
+              "${{ steps.image.outputs.image_ref }}"
+
+            printf -- '- Cloud Run URL: %s\n' \
+              "${{ steps.deploy.outputs.url }}"
+
+            printf -- '- Runtime identity: `%s`\n' \
+              "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}"
+
+            printf -- '- Smoke test: `GET /api/v1/status` ✓\n'
+          } >> "$GITHUB_STEP_SUMMARY"
