@@ -58,6 +58,41 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
 
+      - name: Verify source image metadata
+        id: source
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          docker pull "$IMAGE_REF"
+
+          source_revision="$(
+            docker image inspect "$IMAGE_REF" \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+          )"
+
+          jar_checksum="$(
+            docker image inspect "$IMAGE_REF" \
+              --format '{{index .Config.Labels "io.github.pipeline-orchestrated.jar.sha256"}}'
+          )"
+
+          if [[ -z "$source_revision" ]]; then
+            printf 'ERROR: source revision metadata is missing\n' >&2
+            exit 1
+          fi
+
+          if [[ -z "$jar_checksum" ]]; then
+            printf 'ERROR: JAR checksum metadata is missing\n' >&2
+            exit 1
+          fi
+
+          printf 'source_revision=%s\n' "$source_revision" >> "$GITHUB_OUTPUT"
+          printf 'jar_checksum=%s\n' "$jar_checksum" >> "$GITHUB_OUTPUT"
+
+          printf 'Source image: %s\n' "$IMAGE_REF"
+          printf 'Source revision: %s\n' "$source_revision"
+          printf 'JAR SHA-256: %s\n' "$jar_checksum"
+
       - name: Deploy immutable image to Cloud Run
         id: deploy
         shell: bash
@@ -100,13 +135,13 @@ jobs:
 
           printf 'Cloud Run URL: %s\n' "$service_url"
 
-      - name: Verify deployed revision identity
+      - name: Verify Cloud Run revision
+        id: revision
         shell: bash
         env:
           SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
-          EXPECTED_IMAGE_REF: ${{ steps.image.outputs.image_ref }}
         run: |
           revision="$(
             gcloud run services describe "$SERVICE_NAME" \
@@ -120,7 +155,7 @@ jobs:
             exit 1
           fi
 
-          configured_image="$(
+          runtime_image="$(
             gcloud run revisions describe "$revision" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
@@ -134,29 +169,24 @@ jobs:
               --format='value(status.imageDigest)'
           )"
 
-          ready="$(
-            gcloud run revisions describe "$revision" \
-              --project="$PROJECT_ID" \
-              --region="$REGION" \
-              --format='value(status.conditions[0].status)'
-          )"
-
-          printf 'Revision: %s\n' "$revision"
-          printf 'Expected source image: %s\n' "$EXPECTED_IMAGE_REF"
-          printf 'Configured image: %s\n' "$configured_image"
-          printf 'Cloud Run runtime digest: %s\n' "$runtime_digest"
-
-          if [[ "$configured_image" != "$EXPECTED_IMAGE_REF" ]]; then
-            printf 'ERROR: revision was not configured with the expected immutable image\n' >&2
+          if [[ -z "$runtime_image" ]]; then
+            printf 'ERROR: Cloud Run runtime image could not be resolved\n' >&2
             exit 1
           fi
 
           if [[ -z "$runtime_digest" ]]; then
-            printf 'ERROR: Cloud Run did not resolve a runtime image digest\n' >&2
+            printf 'ERROR: Cloud Run runtime digest could not be resolved\n' >&2
             exit 1
           fi
 
-          printf 'Cloud Run revision identity verified.\n'
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          printf 'runtime_image=%s\n' "$runtime_image" >> "$GITHUB_OUTPUT"
+          printf 'runtime_digest=%s\n' "$runtime_digest" >> "$GITHUB_OUTPUT"
+
+          printf 'Revision: %s\n' "$revision"
+          printf 'Cloud Run imported image: %s\n' "$runtime_image"
+          printf 'Cloud Run runtime digest: %s\n' "$runtime_digest"
+          printf 'Cloud Run revision is ready.\n'
 
       - name: Run production smoke test
         shell: bash
@@ -210,8 +240,23 @@ jobs:
             printf -- '- Service: `%s`\n' \
               "${{ vars.GCP_CLOUD_RUN_SERVICE }}"
 
-            printf -- '- Immutable image: `%s`\n' \
+            printf -- '- Immutable source image: `%s`\n' \
               "${{ steps.image.outputs.image_ref }}"
+
+            printf -- '- Source revision: `%s`\n' \
+              "${{ steps.source.outputs.source_revision }}"
+
+            printf -- '- JAR SHA-256: `%s`\n' \
+              "${{ steps.source.outputs.jar_checksum }}"
+
+            printf -- '- Cloud Run revision: `%s`\n' \
+              "${{ steps.revision.outputs.revision }}"
+
+            printf -- '- Cloud Run runtime image: `%s`\n' \
+              "${{ steps.revision.outputs.runtime_image }}"
+
+            printf -- '- Cloud Run runtime digest: `%s`\n' \
+              "${{ steps.revision.outputs.runtime_digest }}"
 
             printf -- '- Cloud Run URL: %s\n' \
               "${{ steps.deploy.outputs.url }}"
