@@ -8,24 +8,30 @@ on:
       - Staging
     types:
       - completed
+    branches:
+      - main
 
 permissions:
   actions: read
   contents: read
-  packages: read
+  id-token: write
 
 concurrency:
   group: production
   cancel-in-progress: false
 
 jobs:
-  promote-production:
-    name: Promote Production
+  prepare-production:
+    name: Prepare Production Promotion
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
-    environment:
-      name: production
+    outputs:
+      release_sha: ${{ steps.promotion.outputs.release_sha }}
+      image_ref: ${{ steps.promotion.outputs.image_ref }}
+      image_tag: ${{ steps.promotion.outputs.image_tag }}
+      jar_checksum: ${{ steps.promotion.outputs.jar_checksum }}
+      staging_run_id: ${{ steps.promotion.outputs.staging_run_id }}
 
     steps:
       - name: Download staging promotion manifest
@@ -39,6 +45,8 @@ jobs:
       - name: Validate staging promotion manifest
         id: promotion
         shell: bash
+        env:
+          EXPECTED_STAGING_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           manifest="$RUNNER_TEMP/promotion/manifest.json"
 
@@ -50,12 +58,15 @@ jobs:
           jq -e '
             .schemaVersion == 1
             and (.releaseSha | type == "string")
+            and (.releaseRunId | type == "string")
+            and (.stagingRunId | type == "string")
             and (.imageTag | type == "string")
             and (.imageRef | type == "string")
             and (.jarSha256 | type == "string")
           ' "$manifest" >/dev/null
 
           release_sha="$(jq -r '.releaseSha' "$manifest")"
+          staging_run_id="$(jq -r '.stagingRunId' "$manifest")"
           image_tag="$(jq -r '.imageTag' "$manifest")"
           image_ref="$(jq -r '.imageRef' "$manifest")"
           jar_checksum="$(jq -r '.jarSha256' "$manifest")"
@@ -65,8 +76,15 @@ jobs:
           expected_tag="ghcr.io/${owner}/claude-cicd-api:sha-${release_sha}"
           expected_digest_prefix="ghcr.io/${owner}/claude-cicd-api@sha256:"
 
+          if [[ "$staging_run_id" != "$EXPECTED_STAGING_RUN_ID" ]]; then
+            printf 'ERROR: promotion manifest belongs to another staging run\n' >&2
+            printf 'Expected: %s\n' "$EXPECTED_STAGING_RUN_ID" >&2
+            printf 'Actual:   %s\n' "$staging_run_id" >&2
+            exit 1
+          fi
+
           if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            printf 'ERROR: invalid release SHA: %s\n' "$release_sha" >&2
+            printf 'ERROR: invalid release SHA\n' >&2
             exit 1
           fi
 
@@ -75,8 +93,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "$image_ref" != "$expected_digest_prefix"* ]]; then
-            printf 'ERROR: image reference is not an expected immutable GHCR digest\n' >&2
+          if [[ ! "$image_ref" =~ ^${expected_digest_prefix}[0-9a-f]{64}$ ]]; then
+            printf 'ERROR: invalid immutable GHCR image reference\n' >&2
             exit 1
           fi
 
@@ -86,34 +104,68 @@ jobs:
           fi
 
           printf 'release_sha=%s\n' "$release_sha" >> "$GITHUB_OUTPUT"
+          printf 'staging_run_id=%s\n' "$staging_run_id" >> "$GITHUB_OUTPUT"
           printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
           printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
           printf 'jar_checksum=%s\n' "$jar_checksum" >> "$GITHUB_OUTPUT"
 
-          printf 'Approved staging image: %s\n' "$image_ref"
+          printf 'Production candidate validated.\n'
+          printf 'Release SHA: %s\n' "$release_sha"
+          printf 'Image: %s\n' "$image_ref"
+          printf 'JAR SHA-256: %s\n' "$jar_checksum"
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+      - name: Write promotion candidate summary
+        shell: bash
+        run: |
+          {
+            printf '## Production candidate\n\n'
+            printf -- '- Staging run: `%s`\n' \
+              "${{ steps.promotion.outputs.staging_run_id }}"
+            printf -- '- Release commit: `%s`\n' \
+              "${{ steps.promotion.outputs.release_sha }}"
+            printf -- '- Immutable image: `%s`\n' \
+              "${{ steps.promotion.outputs.image_ref }}"
+            printf -- '- JAR SHA-256: `%s`\n' \
+              "${{ steps.promotion.outputs.jar_checksum }}"
+            printf '\nWaiting for Production approval.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    name: Deploy Production to Cloud Run
+    needs:
+      - prepare-production
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      - name: Pull immutable production image
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify promoted source image
+        id: source
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
+          IMAGE_REF: ${{ needs.prepare-production.outputs.image_ref }}
+          EXPECTED_RELEASE_SHA: ${{ needs.prepare-production.outputs.release_sha }}
+          EXPECTED_JAR_CHECKSUM: ${{ needs.prepare-production.outputs.jar_checksum }}
         run: |
           docker pull "$IMAGE_REF"
 
-      - name: Verify production image identity
-        shell: bash
-        env:
-          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
-          RELEASE_SHA: ${{ steps.promotion.outputs.release_sha }}
-          EXPECTED_JAR_CHECKSUM: ${{ steps.promotion.outputs.jar_checksum }}
-        run: |
-          revision="$(
+          source_revision="$(
             docker image inspect "$IMAGE_REF" \
               --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
           )"
@@ -123,47 +175,145 @@ jobs:
               --format '{{index .Config.Labels "io.github.pipeline-orchestrated.jar.sha256"}}'
           )"
 
-          if [[ "$revision" != "$RELEASE_SHA" ]]; then
-            printf 'ERROR: production image revision does not match promoted release\n' >&2
+          if [[ "$source_revision" != "$EXPECTED_RELEASE_SHA" ]]; then
+            printf 'ERROR: source image revision does not match promoted release\n' >&2
+            printf 'Expected: %s\n' "$EXPECTED_RELEASE_SHA" >&2
+            printf 'Actual:   %s\n' "$source_revision" >&2
             exit 1
           fi
 
           if [[ "$jar_checksum" != "$EXPECTED_JAR_CHECKSUM" ]]; then
-            printf 'ERROR: production JAR checksum does not match staging promotion\n' >&2
+            printf 'ERROR: source image JAR checksum does not match promotion manifest\n' >&2
+            printf 'Expected: %s\n' "$EXPECTED_JAR_CHECKSUM" >&2
+            printf 'Actual:   %s\n' "$jar_checksum" >&2
             exit 1
           fi
 
-          printf 'Production image identity verified.\n'
+          printf 'source_revision=%s\n' "$source_revision" >> "$GITHUB_OUTPUT"
+          printf 'jar_checksum=%s\n' "$jar_checksum" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy production candidate
+          printf 'Promoted source image identity verified.\n'
+
+      - name: Deploy immutable image to Cloud Run
+        id: deploy
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.promotion.outputs.image_ref }}
+          IMAGE_REF: ${{ needs.prepare-production.outputs.image_ref }}
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
         run: |
-          docker run \
-            --detach \
-            --name production-app \
-            --publish 127.0.0.1:8080:8080 \
-            "$IMAGE_REF"
+          gcloud run deploy "$SERVICE_NAME" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --image="$IMAGE_REF" \
+            --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+            --port=8080 \
+            --cpu=1 \
+            --memory=512Mi \
+            --min=0 \
+            --max=2 \
+            --concurrency=20 \
+            --timeout=30s \
+            --ingress=all \
+            --allow-unauthenticated \
+            --quiet
+
+          service_url="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.url)'
+          )"
+
+          if [[ -z "$service_url" ]]; then
+            printf 'ERROR: Cloud Run service URL was not resolved\n' >&2
+            exit 1
+          fi
+
+          printf 'url=%s\n' "$service_url" >> "$GITHUB_OUTPUT"
+
+          printf 'Cloud Run URL: %s\n' "$service_url"
+
+      - name: Verify Cloud Run revision
+        id: revision
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          revision="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.latestReadyRevisionName)'
+          )"
+
+          if [[ -z "$revision" ]]; then
+            printf 'ERROR: latest ready revision could not be resolved\n' >&2
+            exit 1
+          fi
+
+          runtime_image="$(
+            gcloud run revisions describe "$revision" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(spec.containers[0].image)'
+          )"
+
+          runtime_digest="$(
+            gcloud run revisions describe "$revision" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.imageDigest)'
+          )"
+
+          if [[ -z "$runtime_image" ]]; then
+            printf 'ERROR: Cloud Run runtime image could not be resolved\n' >&2
+            exit 1
+          fi
+
+          if [[ -z "$runtime_digest" ]]; then
+            printf 'ERROR: Cloud Run runtime digest could not be resolved\n' >&2
+            exit 1
+          fi
+
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          printf 'runtime_image=%s\n' "$runtime_image" >> "$GITHUB_OUTPUT"
+          printf 'runtime_digest=%s\n' "$runtime_digest" >> "$GITHUB_OUTPUT"
+
+          printf 'Revision: %s\n' "$revision"
+          printf 'Cloud Run imported image: %s\n' "$runtime_image"
+          printf 'Cloud Run runtime digest: %s\n' "$runtime_digest"
+          printf 'Cloud Run revision is ready.\n'
 
       - name: Run production smoke test
         shell: bash
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
         run: |
-          endpoint="http://127.0.0.1:8080/api/v1/status"
+          endpoint="${SERVICE_URL}/api/v1/status"
           response=""
 
           for attempt in $(seq 1 30); do
-            if response="$(curl --fail --silent --show-error "$endpoint")"; then
+            if response="$(
+              curl \
+                --fail \
+                --silent \
+                --show-error \
+                "$endpoint"
+            )"; then
               break
             fi
 
-            printf 'Waiting for production application... attempt %d/30\n' "$attempt"
+            printf 'Waiting for Cloud Run... attempt %d/30\n' "$attempt"
             sleep 2
           done
 
           if [[ -z "$response" ]]; then
-            printf 'ERROR: production application did not become ready\n' >&2
-            docker logs production-app >&2
+            printf 'ERROR: Cloud Run service did not become available\n' >&2
             exit 1
           fi
 
@@ -180,30 +330,38 @@ jobs:
         shell: bash
         run: |
           {
-            printf '## Production promotion\n\n'
+            printf '## Production Cloud Run deployment\n\n'
+
+            printf -- '- Staging run: `%s`\n' \
+              "${{ needs.prepare-production.outputs.staging_run_id }}"
 
             printf -- '- Release commit: `%s`\n' \
-              "${{ steps.promotion.outputs.release_sha }}"
+              "${{ needs.prepare-production.outputs.release_sha }}"
 
-            printf -- '- Immutable image: `%s`\n' \
-              "${{ steps.promotion.outputs.image_ref }}"
+            printf -- '- Promoted image: `%s`\n' \
+              "${{ needs.prepare-production.outputs.image_ref }}"
 
             printf -- '- JAR SHA-256: `%s`\n' \
-              "${{ steps.promotion.outputs.jar_checksum }}"
+              "${{ needs.prepare-production.outputs.jar_checksum }}"
 
-            printf -- '- Source: `staging-promotion`\n'
-            printf -- '- Approval: `production` environment\n'
+            printf -- '- Cloud Run revision: `%s`\n' \
+              "${{ steps.revision.outputs.revision }}"
+
+            printf -- '- Cloud Run runtime image: `%s`\n' \
+              "${{ steps.revision.outputs.runtime_image }}"
+
+            printf -- '- Cloud Run runtime digest: `%s`\n' \
+              "${{ steps.revision.outputs.runtime_digest }}"
+
+            printf -- '- Cloud Run URL: %s\n' \
+              "${{ steps.deploy.outputs.url }}"
+
+            printf -- '- Runtime identity: `%s`\n' \
+              "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}"
+
+            printf -- '- Authentication: `GitHub OIDC / Workload Identity Federation`\n'
+
+            printf -- '- Approval: `production environment`\n'
+
             printf -- '- Smoke test: `GET /api/v1/status` ✓\n'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Show production logs on failure
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          docker logs production-app || true
-
-      - name: Remove production container
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          docker rm --force production-app >/dev/null 2>&1 || true
