@@ -76,16 +76,16 @@ jobs:
             gcloud run services describe "$SERVICE_NAME" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
-              --format='value(status.latestReadyRevisionName)'
+              --format='value(status.traffic[0].revisionName)'
           )"
 
           if [[ -z "$current_revision" ]]; then
-            printf 'ERROR: current production revision could not be resolved\n' >&2
+            printf 'ERROR: current production traffic revision could not be resolved\n' >&2
             exit 1
           fi
 
           printf 'revision=%s\n' "$current_revision" >> "$GITHUB_OUTPUT"
-          printf 'Current revision: %s\n' "$current_revision"
+          printf 'Current production revision: %s\n' "$current_revision"
 
       - name: Roll back production traffic
         shell: bash
