@@ -106,7 +106,7 @@ jobs:
           SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
-          EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
+          EXPECTED_IMAGE_REF: ${{ steps.image.outputs.image_ref }}
         run: |
           revision="$(
             gcloud run services describe "$SERVICE_NAME" \
@@ -120,23 +120,43 @@ jobs:
             exit 1
           fi
 
-          deployed_digest="$(
+          configured_image="$(
+            gcloud run revisions describe "$revision" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(spec.containers[0].image)'
+          )"
+
+          runtime_digest="$(
             gcloud run revisions describe "$revision" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
               --format='value(status.imageDigest)'
           )"
 
-          printf 'Revision: %s\n' "$revision"
-          printf 'Expected digest: %s\n' "$EXPECTED_DIGEST"
-          printf 'Deployed digest: %s\n' "$deployed_digest"
+          ready="$(
+            gcloud run revisions describe "$revision" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.conditions[0].status)'
+          )"
 
-          if [[ "$deployed_digest" != *"$EXPECTED_DIGEST" ]]; then
-            printf 'ERROR: Cloud Run is not executing the expected image digest\n' >&2
+          printf 'Revision: %s\n' "$revision"
+          printf 'Expected source image: %s\n' "$EXPECTED_IMAGE_REF"
+          printf 'Configured image: %s\n' "$configured_image"
+          printf 'Cloud Run runtime digest: %s\n' "$runtime_digest"
+
+          if [[ "$configured_image" != "$EXPECTED_IMAGE_REF" ]]; then
+            printf 'ERROR: revision was not configured with the expected immutable image\n' >&2
             exit 1
           fi
 
-          printf 'Cloud Run image identity verified.\n'
+          if [[ -z "$runtime_digest" ]]; then
+            printf 'ERROR: Cloud Run did not resolve a runtime image digest\n' >&2
+            exit 1
+          fi
+
+          printf 'Cloud Run revision identity verified.\n'
 
       - name: Run production smoke test
         shell: bash
