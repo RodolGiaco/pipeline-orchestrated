@@ -1,0 +1,173 @@
+name: Production Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_revision:
+        description: Cloud Run revision to receive 100% of production traffic
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback Production
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+      url: ${{ steps.service.outputs.url }}
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Validate target revision
+        id: target
+        shell: bash
+        env:
+          TARGET_REVISION: ${{ inputs.target_revision }}
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          if [[ ! "$TARGET_REVISION" =~ ^claude-cicd-api-[0-9]{5}-[a-z0-9]+$ ]]; then
+            printf 'ERROR: invalid Cloud Run revision name\n' >&2
+            exit 1
+          fi
+
+          revision_service="$(
+            gcloud run revisions describe "$TARGET_REVISION" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(metadata.labels.serving\.knative\.dev/service)'
+          )"
+
+          if [[ "$revision_service" != "$SERVICE_NAME" ]]; then
+            printf 'ERROR: target revision does not belong to expected service\n' >&2
+            exit 1
+          fi
+
+          printf 'Target revision validated: %s\n' "$TARGET_REVISION"
+
+      - name: Capture current production revision
+        id: current
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          current_revision="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.traffic[0].revisionName)'
+          )"
+
+          if [[ -z "$current_revision" ]]; then
+            printf 'ERROR: current production traffic revision could not be resolved\n' >&2
+            exit 1
+          fi
+
+          printf 'revision=%s\n' "$current_revision" >> "$GITHUB_OUTPUT"
+          printf 'Current production revision: %s\n' "$current_revision"
+
+      - name: Roll back production traffic
+        shell: bash
+        env:
+          TARGET_REVISION: ${{ inputs.target_revision }}
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          gcloud run services update-traffic "$SERVICE_NAME" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --to-revisions="${TARGET_REVISION}=100" \
+            --quiet
+
+          printf 'Production traffic moved to: %s\n' "$TARGET_REVISION"
+
+      - name: Resolve production service URL
+        id: service
+        shell: bash
+        env:
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          service_url="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.url)'
+          )"
+
+          if [[ -z "$service_url" ]]; then
+            printf 'ERROR: Cloud Run service URL could not be resolved\n' >&2
+            exit 1
+          fi
+
+          printf 'url=%s\n' "$service_url" >> "$GITHUB_OUTPUT"
+
+      - name: Run rollback smoke test
+        shell: bash
+        env:
+          SERVICE_URL: ${{ steps.service.outputs.url }}
+        run: |
+          endpoint="${SERVICE_URL}/api/v1/status"
+          response=""
+
+          for attempt in $(seq 1 30); do
+            if response="$(curl --fail --silent --show-error "$endpoint")"; then
+              break
+            fi
+
+            printf 'Waiting for rolled back revision... attempt %d/30\n' "$attempt"
+            sleep 2
+          done
+
+          if [[ -z "$response" ]]; then
+            printf 'ERROR: rolled back service did not become available\n' >&2
+            exit 1
+          fi
+
+          printf 'Response: %s\n' "$response"
+
+          if ! jq -e '.status == "UP"' <<< "$response" >/dev/null; then
+            printf 'ERROR: rollback smoke test returned unexpected status\n' >&2
+            exit 1
+          fi
+
+          printf 'Rollback smoke test passed: status=UP\n'
+
+      - name: Write rollback summary
+        shell: bash
+        run: |
+          {
+            printf '## Production rollback\n\n'
+            printf -- '- Previous revision: `%s`\n' \
+              "${{ steps.current.outputs.revision }}"
+            printf -- '- Target revision: `%s`\n' \
+              "${{ inputs.target_revision }}"
+            printf -- '- Traffic: `100%%`\n'
+            printf -- '- Cloud Run URL: %s\n' \
+              "${{ steps.service.outputs.url }}"
+            printf -- '- Approval: `production environment`\n'
+            printf -- '- Smoke test: `GET /api/v1/status` ✓\n'
+          } >> "$GITHUB_STEP_SUMMARY"
