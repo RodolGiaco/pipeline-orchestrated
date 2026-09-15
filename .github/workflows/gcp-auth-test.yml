@@ -1,0 +1,57 @@
+name: GCP Auth Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-gcp-auth:
+    name: Test GCP Authentication
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify authenticated identity
+        shell: bash
+        run: |
+          printf 'Active Google Cloud account:\n'
+          gcloud auth list --filter=status:ACTIVE
+
+          printf '\nConfigured project:\n'
+          gcloud config get-value project
+
+      - name: Verify project access
+        shell: bash
+        run: |
+          actual_project="$(
+            gcloud config get-value project
+          )"
+
+          if [[ "$actual_project" != "${{ vars.GCP_PROJECT_ID }}" ]]; then
+            printf 'ERROR: unexpected Google Cloud project\n' >&2
+            printf 'Expected: %s\n' "${{ vars.GCP_PROJECT_ID }}" >&2
+            printf 'Actual:   %s\n' "$actual_project" >&2
+            exit 1
+          fi
+
+          gcloud run services list \
+            --region="${{ vars.GCP_REGION }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}"
+
+          printf 'GitHub -> Google Cloud authentication succeeded.\n'
