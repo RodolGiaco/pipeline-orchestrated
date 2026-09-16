@@ -49,20 +49,36 @@ jobs:
             printf 'ERROR: invalid Cloud Run revision name\n' >&2
             exit 1
           fi
-
-          revision_service="$(
+          
+          revision_json="$(
             gcloud run revisions describe "$TARGET_REVISION" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
-              --format='value(metadata.labels.serving\.knative\.dev/service)'
+              --format=json
           )"
-
-          if [[ "$revision_service" != "$SERVICE_NAME" ]]; then
-            printf 'ERROR: target revision does not belong to expected service\n' >&2
+          
+          revision_service="$(
+            jq -r \
+              '.metadata.labels["serving.knative.dev/service"] // empty' \
+              <<< "$revision_json"
+          )"
+          
+          if [[ -z "$revision_service" ]]; then
+            printf 'ERROR: target revision service could not be resolved\n' >&2
             exit 1
           fi
-
+          
+          if [[ "$revision_service" != "$SERVICE_NAME" ]]; then
+            printf 'ERROR: target revision does not belong to expected service\n' >&2
+            printf 'Expected service: %s\n' "$SERVICE_NAME" >&2
+            printf 'Actual service:   %s\n' "$revision_service" >&2
+            exit 1
+          fi
+          
+          printf 'revision=%s\n' "$TARGET_REVISION" >> "$GITHUB_OUTPUT"
+          
           printf 'Target revision validated: %s\n' "$TARGET_REVISION"
+          printf 'Cloud Run service: %s\n' "$revision_service"
 
       - name: Capture current production revision
         id: current
