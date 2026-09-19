@@ -99,6 +99,7 @@ jobs:
               --detach \
               --name staging-app \
               --publish 127.0.0.1:8080:8080 \
+              --env APP_ENVIRONMENT=staging \
               "$IMAGE_REF"
           )"
 
