@@ -209,6 +209,7 @@ jobs:
             --region="$REGION" \
             --image="$IMAGE_REF" \
             --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+            --set-env-vars=APP_ENVIRONMENT=production \
             --port=8080 \
             --cpu=1 \
             --memory=512Mi \

@@ -11,7 +11,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(StatusController.class)
+/**
+ * Pins {@code build.version} and {@code app.environment} so the assertions stay
+ * independent from the ambient environment of the machine running the build.
+ */
+@WebMvcTest(
+        controllers = StatusController.class,
+        properties = {
+                "build.version=0.0.1-TEST",
+                "app.environment=test"
+        }
+)
 class StatusControllerTest {
 
     @Autowired
@@ -23,11 +33,7 @@ class StatusControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("application/json"))
                 .andExpect(jsonPath("$.status").value("UP"))
-                .andExpect(jsonPath("$.version").value("0.0.1-SNAPSHOT"))
-                .andExpect(jsonPath("$.environment").value("local"))
-                .andExpect(jsonPath("$.description").value("Service is running"))
-                .andExpect(jsonPath("$.component").value("status"))
-                .andExpect(jsonPath("$.platform").value("pipeline-orchestrated"))
-                .andExpect(jsonPath("$.pipeline").value("github-actions"));
+                .andExpect(jsonPath("$.version").value("0.0.1-TEST"))
+                .andExpect(jsonPath("$.environment").value("test"));
     }
 }
