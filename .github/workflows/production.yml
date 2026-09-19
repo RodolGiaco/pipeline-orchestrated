@@ -221,11 +221,19 @@ jobs:
             --allow-unauthenticated \
             --quiet
 
-          service_url="$(
+          service_json="$(
             gcloud run services describe "$SERVICE_NAME" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
-              --format='value(status.url)'
+              --format=json
+          )"
+
+          service_url="$(
+            jq -r '.status.url // empty' <<< "$service_json"
+          )"
+
+          deployed_revision="$(
+            jq -r '.status.latestCreatedRevisionName // empty' <<< "$service_json"
           )"
 
           if [[ -z "$service_url" ]]; then
@@ -233,42 +241,70 @@ jobs:
             exit 1
           fi
 
+          if [[ -z "$deployed_revision" ]]; then
+            printf 'ERROR: deployed Cloud Run revision was not resolved\n' >&2
+            exit 1
+          fi
+
           printf 'url=%s\n' "$service_url" >> "$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$deployed_revision" >> "$GITHUB_OUTPUT"
 
           printf 'Cloud Run URL: %s\n' "$service_url"
+          printf 'Deployed revision: %s\n' "$deployed_revision"
 
-      - name: Verify Cloud Run revision
-        id: revision
+      - name: Promote deployed revision to production traffic
         shell: bash
         env:
+          DEPLOYED_REVISION: ${{ steps.deploy.outputs.revision }}
           SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
         run: |
-          revision="$(
-            gcloud run services describe "$SERVICE_NAME" \
-              --project="$PROJECT_ID" \
-              --region="$REGION" \
-              --format='value(status.latestReadyRevisionName)'
-          )"
+          gcloud run services update-traffic "$SERVICE_NAME" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --to-revisions="${DEPLOYED_REVISION}=100" \
+            --quiet
 
-          if [[ -z "$revision" ]]; then
-            printf 'ERROR: latest ready revision could not be resolved\n' >&2
-            exit 1
-          fi
+          printf 'Production traffic assigned to: %s\n' "$DEPLOYED_REVISION"
 
+      - name: Verify Cloud Run revision and production traffic
+        id: revision
+        shell: bash
+        env:
+          DEPLOYED_REVISION: ${{ steps.deploy.outputs.revision }}
+          SERVICE_NAME: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
           runtime_image="$(
-            gcloud run revisions describe "$revision" \
+            gcloud run revisions describe "$DEPLOYED_REVISION" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
               --format='value(spec.containers[0].image)'
           )"
 
           runtime_digest="$(
-            gcloud run revisions describe "$revision" \
+            gcloud run revisions describe "$DEPLOYED_REVISION" \
               --project="$PROJECT_ID" \
               --region="$REGION" \
               --format='value(status.imageDigest)'
+          )"
+
+          service_json="$(
+            gcloud run services describe "$SERVICE_NAME" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format=json
+          )"
+
+          active_percent="$(
+            jq -r \
+              --arg revision "$DEPLOYED_REVISION" \
+              '.status.traffic[]
+               | select(.revisionName == $revision)
+               | .percent' \
+              <<< "$service_json"
           )"
 
           if [[ -z "$runtime_image" ]]; then
@@ -281,14 +317,22 @@ jobs:
             exit 1
           fi
 
-          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          if [[ "$active_percent" != "100" ]]; then
+            printf 'ERROR: deployed revision is not receiving 100%% of production traffic\n' >&2
+            printf 'Revision: %s\n' "$DEPLOYED_REVISION" >&2
+            printf 'Traffic:  %s\n' "${active_percent:-0}" >&2
+            exit 1
+          fi
+
+          printf 'revision=%s\n' "$DEPLOYED_REVISION" >> "$GITHUB_OUTPUT"
           printf 'runtime_image=%s\n' "$runtime_image" >> "$GITHUB_OUTPUT"
           printf 'runtime_digest=%s\n' "$runtime_digest" >> "$GITHUB_OUTPUT"
 
-          printf 'Revision: %s\n' "$revision"
+          printf 'Revision: %s\n' "$DEPLOYED_REVISION"
+          printf 'Production traffic: 100%%\n'
           printf 'Cloud Run imported image: %s\n' "$runtime_image"
           printf 'Cloud Run runtime digest: %s\n' "$runtime_digest"
-          printf 'Cloud Run revision is ready.\n'
+          printf 'Cloud Run revision and traffic validated.\n'
 
       - name: Run production smoke test
         shell: bash
