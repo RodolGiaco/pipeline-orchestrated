@@ -470,11 +470,6 @@ This reduces blast radius and improves auditability.
 ```text
 CLAUDE_CODE_OAUTH_TOKEN
 CLAUDE_AUTOMATION_APP_PRIVATE_KEY
-```
-
-Optional:
-
-```text
 OPENROUTER_API_KEY
 ```
 
@@ -488,7 +483,11 @@ GCP_RUNTIME_SERVICE_ACCOUNT
 GCP_WORKLOAD_IDENTITY_PROVIDER
 GCP_CLOUD_RUN_SERVICE
 CLAUDE_AUTOMATION_APP_CLIENT_ID
+USE_OPENROUTER
 ```
+
+`USE_OPENROUTER` selects the agent model provider. `OPENROUTER_API_KEY` is read only
+when it is `true`.
 
 Long-lived Google Service Account JSON credentials are intentionally not used.
 
@@ -545,7 +544,10 @@ Production incident
 → Smoke Test
 ```
 
-Alternative deployment paths should not be kept available after validation workflows are no longer needed.
+Product changes reach Production through this path only.
+
+`claude-task.yml` executes the agent manually for diagnostics. It publishes no branch,
+no Pull Request, and no artifact, so it cannot introduce a change into either path above.
 
 ---
 
