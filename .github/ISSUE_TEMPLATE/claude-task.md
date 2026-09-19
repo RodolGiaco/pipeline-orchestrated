@@ -6,19 +6,20 @@ labels: ""
 assignees: ""
 ---
 
-## Objetivo
+## Objective
 
-Describir claramente qué se necesita implementar o resolver.
+Describe clearly what needs to be implemented or resolved.
 
-## Criterios de aceptación
+## Acceptance criteria
 
-- [ ] Criterio 1
-- [ ] Criterio 2
+- [ ] Criterion 1
+- [ ] Criterion 2
 
-## Restricciones
+## Constraints
 
-Indicar restricciones técnicas relevantes, archivos que no deben modificarse o decisiones de arquitectura que deben respetarse.
+State the relevant technical constraints, the files that must not be modified, and
+the architectural decisions that must be respected.
 
-## Contexto adicional
+## Additional context
 
-Agregar únicamente información necesaria para ejecutar correctamente la tarea.
+Add only the information required to execute the task correctly.
