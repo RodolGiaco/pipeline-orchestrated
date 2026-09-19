@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+#
+# Runs Claude Code headless against a prompt read from stdin and normalises the result.
+#
+# The agent is constrained by .claude/schemas/task-result.schema.json, so the caller receives
+# a predictable object instead of free-form model output.
+#
+# Input  : task prompt on stdin
+# Output : {sessionId, totalCostUsd, taskResult} on stdout
+#
+# Exit codes:
+#   0   the agent reported the task as completed
+#   10  the agent reported itself blocked under the project policies
+#   20  Claude Code failed to run
+#   21  the result was unusable: the status was missing or unsupported
+#   64  the prompt was empty
+#
+# The reported status is the agent's own claim about its work. It is deliberately not the
+# acceptance signal: scripts/ci/run-task.sh applies the external quality gate on top of it.
+#
 
 set -euo pipefail
 

@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+#
+# PreToolUse hook: keeps the main branch read-only for the agent.
+#
+# Registered in .claude/settings.json for the Edit, Write and Bash tools. It enforces at runtime
+# what the permission list expresses as policy, so the protection holds even against a prompt
+# that asks the agent to disregard it.
+#
+# On main:
+#   Edit and Write are denied outright.
+#   Bash is denied except for the project quality gate and read-only git inspection.
+#
+# A detached HEAD is denied as well, because the destination of a change cannot be determined.
+# On any other branch the hook allows the call and exits silently.
+#
+# Input  : PreToolUse event JSON on stdin
+# Output : a permission decision on stdout when the call is denied; nothing when it is allowed
+#
 
 set -euo pipefail
 

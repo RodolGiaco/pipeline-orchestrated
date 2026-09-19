@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+#
+# Developer entry point for running the same agent pipeline that CI runs.
+#
+# Selects the model provider and then delegates to scripts/ci/run-task.sh, so a local run and a
+# CI run exercise identical validation logic and return identical exit codes.
+#
+# Configuration:
+#   .env.local                             optional; USE_OPENROUTER selects the provider
+#   ~/.config/claude-code/openrouter.env   OpenRouter credentials, kept outside the repository
+#
+# Input, output and exit codes are those of scripts/ci/run-task.sh.
+#
 
 set -euo pipefail
 
