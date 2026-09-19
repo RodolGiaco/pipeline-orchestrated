@@ -62,7 +62,7 @@ ghcr.io/rodolgiaco/claude-cicd-api
 
 ## 3. Production Workflows
 
-The canonical workflows are:
+The canonical delivery workflows are:
 
 ```text
 .github/workflows/claude-issue.yml
@@ -74,7 +74,14 @@ The canonical workflows are:
 .github/workflows/production-rollback.yml
 ```
 
-Temporary workflows used during infrastructure validation have been removed.
+One additional workflow runs outside the delivery cycle:
+
+```text
+.github/workflows/claude-task.yml
+```
+
+It executes the agent manually against a free-form prompt for diagnostics. It publishes
+no branch, no Pull Request, and no artifact, so it has no path to Production.
 
 ### Workflow Responsibilities
 
@@ -87,6 +94,7 @@ Temporary workflows used during infrastructure validation have been removed.
 | `staging.yml` | Runs ephemeral staging, smoke test, and produces `staging-promotion` |
 | `production.yml` | Validates the promotion, requests human approval, and deploys to Cloud Run |
 | `production-rollback.yml` | Reassigns traffic to a previous Cloud Run revision |
+| `claude-task.yml` | Runs the agent manually for diagnostics, outside the delivery cycle |
 
 ---
 
@@ -303,26 +311,23 @@ GCP_RUNTIME_SERVICE_ACCOUNT
 GCP_WORKLOAD_IDENTITY_PROVIDER
 GCP_CLOUD_RUN_SERVICE
 CLAUDE_AUTOMATION_APP_CLIENT_ID
-```
-
-If the alternative provider is retained:
-
-```text
 USE_OPENROUTER
 ```
+
+`USE_OPENROUTER` selects the model provider used by `claude-issue.yml`. It defaults to
+`false`, which runs the agent against the default Claude model. Setting it to `true`
+routes the agent through OpenRouter, which keeps small changes deliverable when the
+primary Claude quota is unavailable.
 
 ### Repository Secrets
 
 ```text
 CLAUDE_CODE_OAUTH_TOKEN
 CLAUDE_AUTOMATION_APP_PRIVATE_KEY
-```
-
-Optional if OpenRouter is retained:
-
-```text
 OPENROUTER_API_KEY
 ```
+
+`OPENROUTER_API_KEY` is read only when `USE_OPENROUTER` is `true`.
 
 Secrets such as the following should not exist:
 
