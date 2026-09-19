@@ -42,7 +42,7 @@ flowchart TD
     I --> J[Release]
     J --> K[JAR + SHA-256]
     J --> L[OCI Image]
-    L --> M[GHCR image@digest]
+    L --> M["GHCR image@digest"]
     M --> N[Staging]
     N --> O[Smoke Test]
     O --> P[staging-promotion Manifest]
@@ -198,7 +198,7 @@ flowchart TD
     C --> D[JAR SHA-256]
     C --> E[Docker Build]
     E --> F[GHCR]
-    F --> G[image@sha256 digest]
+    F --> G["image@sha256 digest"]
 
     A -. source identity .-> H[Git Commit SHA]
     H --> E
@@ -351,8 +351,8 @@ Cloud Run may internally import an external GHCR image.
 
 ```mermaid
 flowchart LR
-    A[GHCR image@sha256:A] --> B[Cloud Run Import]
-    B --> C[cache.us-docker.pkg.dev/...@sha256:B]
+    A["GHCR image@sha256:A"] --> B[Cloud Run Import]
+    B --> C["cache.us-docker.pkg.dev/...@sha256:B"]
     C --> D[Cloud Run Revision]
 ```
 
@@ -502,7 +502,7 @@ flowchart LR
     A[Issue] --> B[Pull Request]
     B --> C[Merge Commit]
     C --> D[JAR SHA-256]
-    D --> E[GHCR image@digest]
+    D --> E["GHCR image@digest"]
     E --> F[Staging Run]
     F --> G[Promotion Manifest]
     G --> H[Production Approval]
@@ -616,7 +616,7 @@ flowchart TD
         I[Maven verify]
         J[JAR + SHA-256]
         K[Docker Image]
-        L[GHCR image@digest]
+        L["GHCR image@digest"]
     end
 
     subgraph STAGING["Staging"]
