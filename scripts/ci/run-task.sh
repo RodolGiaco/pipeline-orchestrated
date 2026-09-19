@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+#
+# Runs the implementation agent and then the external quality gate, collapsing both into a
+# single exit code and a single JSON result.
+#
+# This separation is the core of the pipeline. The agent's own "completed" claim never decides
+# whether an implementation may be published; only ./mvnw -B -ntp verify does.
+#
+# Provider-specific environment variables are unset before the gate runs, so the build is never
+# influenced by the model configuration used to produce the change.
+#
+# Input  : task prompt on stdin
+# Output : {pipelineStatus, agent, qualityGate} on stdout
+#
+# Exit codes:
+#   0   the agent completed and the quality gate passed  -> publishable
+#   10  the agent reported itself blocked                -> the gate was not run
+#   20  the agent execution failed
+#   30  the agent completed but the quality gate failed  -> not publishable
+#
 
 set -euo pipefail
 
