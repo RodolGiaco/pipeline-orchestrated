@@ -65,42 +65,45 @@ validation, immutable promotion, identity separation, and a tested recovery path
 
 ## Demo
 
-> Each block below marks a screenshot or GIF to add. Drop the file at the given path and
-> uncomment the image line underneath it.
-
 ### 1. The agent loop, end to end
 
-> **Add:** `docs/assets/demo-issue-to-pr.png`
-> A GitHub Issue labeled `claude:ready`, next to the Pull Request the automation opened from it.
-> Include the label progression in the Issue timeline if it is visible. This is the most
-> convincing image in the project — use the best run you have.
+An Issue labeled `claude:ready` starts the agent, and the automation carries the task through the
+full label lifecycle — `in-progress`, `published`, `pr-open`, `completed` — publishing the
+implementation as a Pull Request on the way.
 
-<!-- ![Issue to Pull Request](docs/assets/demo-issue-to-pr.png) -->
+![Issue lifecycle and automated Pull Request](docs/assets/demo-issue-to-pr.png)
 
 ### 2. The promotion chain
 
-> **Add:** `docs/assets/demo-promotion-chain.png`
-> The Actions tab showing Release, Staging and Production as consecutive runs triggered by
-> `workflow_run`, all green. A GIF scrolling through the three run summaries works well here.
+A merge into `main` triggers Release, which chains into Staging and then Production through
+`workflow_run`. Each stage validates the artifact produced by the one before it.
 
-<!-- ![Promotion chain](docs/assets/demo-promotion-chain.png) -->
+![Release, Staging and Production runs](docs/assets/demo-promotion-chain.png)
 
 ### 3. The human gate
 
-> **Add:** `docs/assets/demo-production-approval.png`
-> The "Review deployments" dialog for the production environment, next to the Prepare Production
-> Promotion job summary listing the validated image digest and JAR checksum. This shows an
-> operator approving a known candidate rather than a blind deploy.
+Production is split into two jobs. The first validates the candidate, the second deploys it, and
+the environment approval sits between them.
 
-<!-- ![Production approval](docs/assets/demo-production-approval.png) -->
+![Production workflow jobs](docs/assets/demo-production-jobs.png)
 
-### 4. The running service
+By the time approval is requested, the image digest and the JAR checksum have already been
+verified against the promotion manifest. The operator approves a known candidate.
 
-> **Add:** `docs/assets/demo-live-endpoint.png`
-> A terminal running `curl` against the live Cloud Run URL, returning `"environment": "production"`.
-> Proves the pipeline ends in something real.
+![Validated production candidate awaiting approval](docs/assets/demo-production-candidate.png)
 
-<!-- ![Live endpoint](docs/assets/demo-live-endpoint.png) -->
+### 4. Deployment evidence
+
+Every deployment records its chain of custody: staging run, release commit, promoted image digest,
+JAR checksum, Cloud Run revision, runtime identity, authentication method, and smoke test result.
+
+![Production deployment summary](docs/assets/demo-production-deployment.png)
+
+### 5. The running service
+
+The deployed revision answers over HTTPS and reports the environment it was deployed to.
+
+![Live status endpoint on Cloud Run](docs/assets/demo-live-endpoint.png)
 
 ---
 
