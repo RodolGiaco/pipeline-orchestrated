@@ -67,43 +67,46 @@ recuperación probado.
 
 ## Demo
 
-> Cada bloque marca una captura o GIF a agregar. Poné el archivo en la ruta indicada y
-> descomentá la línea de imagen que está debajo.
-
 ### 1. El ciclo del agente, de punta a punta
 
-> **Agregar:** `docs/assets/demo-issue-to-pr.png`
-> Un GitHub Issue etiquetado `claude:ready`, junto al Pull Request que la automatización abrió a
-> partir de él. Si se ve la progresión de etiquetas en la línea de tiempo del Issue, mejor. Es la
-> imagen más convincente del proyecto: usá la mejor ejecución que tengas.
+Un Issue etiquetado `claude:ready` inicia al agente, y la automatización lleva la tarea por todo el
+ciclo de etiquetas — `in-progress`, `published`, `pr-open`, `completed` — publicando la
+implementación como Pull Request en el camino.
 
-<!-- ![Del Issue al Pull Request](docs/assets/demo-issue-to-pr.png) -->
+![Ciclo de vida del Issue y Pull Request automatizado](docs/assets/demo-issue-to-pr.png)
 
 ### 2. La cadena de promoción
 
-> **Agregar:** `docs/assets/demo-promotion-chain.png`
-> La pestaña Actions mostrando Release, Staging y Production como ejecuciones consecutivas
-> disparadas por `workflow_run`, las tres en verde. Un GIF recorriendo los tres resúmenes de
-> ejecución funciona muy bien acá.
+Un merge a `main` dispara Release, que encadena Staging y después Production mediante
+`workflow_run`. Cada etapa valida el artefacto que produjo la anterior.
 
-<!-- ![Cadena de promoción](docs/assets/demo-promotion-chain.png) -->
+![Ejecuciones de Release, Staging y Production](docs/assets/demo-promotion-chain.png)
 
 ### 3. La compuerta humana
 
-> **Agregar:** `docs/assets/demo-production-approval.png`
-> El diálogo "Review deployments" del entorno production, junto al resumen del job Prepare
-> Production Promotion que lista el digest de imagen y el checksum del JAR validados. Muestra a
-> un operador aprobando un candidato conocido, no un deploy a ciegas.
+Production está dividido en dos jobs. El primero valida el candidato, el segundo lo despliega, y la
+aprobación del entorno se ubica entre ambos.
 
-<!-- ![Aprobación de producción](docs/assets/demo-production-approval.png) -->
+![Jobs del workflow de producción](docs/assets/demo-production-jobs.png)
 
-### 4. El servicio corriendo
+Para cuando se pide la aprobación, el digest de la imagen y el checksum del JAR ya fueron
+verificados contra el manifiesto de promoción. El operador aprueba un candidato conocido.
 
-> **Agregar:** `docs/assets/demo-live-endpoint.png`
-> Una terminal con `curl` contra la URL real de Cloud Run, devolviendo `"environment": "production"`.
-> Demuestra que el pipeline termina en algo real.
+![Candidato de producción validado esperando aprobación](docs/assets/demo-production-candidate.png)
 
-<!-- ![Endpoint en vivo](docs/assets/demo-live-endpoint.png) -->
+### 4. Evidencia del despliegue
+
+Cada despliegue registra su cadena de custodia: ejecución de staging, commit de release, digest de
+la imagen promovida, checksum del JAR, revisión de Cloud Run, identidad de ejecución, método de
+autenticación y resultado del smoke test.
+
+![Resumen del despliegue en producción](docs/assets/demo-production-deployment.png)
+
+### 5. El servicio corriendo
+
+La revisión desplegada responde por HTTPS e informa el entorno en el que fue desplegada.
+
+![Endpoint de estado en vivo en Cloud Run](docs/assets/demo-live-endpoint.png)
 
 ---
 
